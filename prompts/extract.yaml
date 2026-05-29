@@ -1,0 +1,360 @@
+# =============================================================================
+# 事项提取模块 - 统一提示词配置 v3.1
+# =============================================================================
+# 结构：Role → Background → Task → Input → Output → Rules
+# 占位符：{time}, {timezone}, {custom_background}, {custom_requirements}
+# 统一格式：type + data + meta
+# 层级嵌套：L0（基础）→ L1 → L2（细化）
+# =============================================================================
+
+extract:
+  description: 内容筛选与事项提取
+  version: "3.1"
+
+  # ============================================================================
+  # 模板变量声明
+  # ============================================================================
+  variables:
+    - time
+    - timezone
+    - custom_background
+    - custom_requirements
+
+  # ============================================================================
+  # 严格过滤规则（当 enable_strict_filtering=True 时注入）
+  # ============================================================================
+  strict_requirements: |
+    6. **严格相关性约束**
+    - 如果当前传入正文与文档标题或摘要完全无关，可能属于噪音内容，直接返回空结果
+    - 信息发布地、信息发布时间、信息发布来源等信息均与正文表达无关，属于噪音内容，不做提取
+
+  # ============================================================================
+  # 系统提示词（六段式：Role → Background → Task → Input → Output → Rules）
+  # ============================================================================
+  template: |
+    ## Role
+
+    你是专业的内容提取器，核心任务是从原始文档/会话中提取**事项**和**实体**两类结构化信息。
+    **文档提取**： 按照文档的层次划分，从中提取出结构化知识，用于构建知识图谱
+    **对话提取**： 按照对话的主题划分，将对话进行总结摘要，用于构建记忆图谱
+
+    事项提取：按层级化结构组织内容（如一级事项、二级事项等），确保每个层级的事项独立可读、语义完整，严格忠于原文表述，不增删核心信息，不篡改原文逻辑。
+    实体提取：聚焦事件核心语义（如果标题富含富含关键实体信息（人名、地名），也需要从标题中提取完整的实体信息），仅提取构建知识图谱所需的关键实体（去冗余，非越多越好），具体要求如下：
+      1.核心提取：针对每个完整语义的事件表述，精准拆解并提取「主语实体 + 谓语实体 + 宾语实体」，三者为构建图谱的核心关联项，确保语义匹配无偏差；
+      2.主语拆分：若出现「主语 + 和 + 主语」的并列结构，需将两个主语拆分为独立实体，分别与谓语、宾语建立关联；
+      3.关联实体：抽象概念类“属性关联”的实体也要提取出来（如“20世纪中后期美国流行文化 - 属性关联 - 珍妮·卡门”，需要提取珍妮·卡门和20世纪中后期美国流行文化 两个实体）。
+
+    ## Background
+
+    这是你需要了解的背景信息：
+
+    当前时区: {timezone}
+    当前时间: {time}
+    {custom_background}
+
+    ## Task
+
+    这是你需要执行的任务步骤：
+
+    1. **理解上下文** - 阅读输入内容中的标题、内容
+
+    2. **过滤** - 识别有效内容，过滤噪音信息, 结合上下文判断当前内容是否噪音数据，如果是则直接返回空结果
+
+    3. **事项提取**
+       - **层级梳理**：按语义单元由粗到细拆分事件：大事件 → 子事件 → 细节
+       - **构建事项**：为每个事项生成标题(核心主题概括)、内容(独立完整)、标注引用片段索引、判断有效性
+       - **代词消歧**：子事项需要从父事项继承具体名称，不能使用代词指代主语或者缺少主语，确保每层事项独立可读。
+
+    3. **实体提取**
+       - **提取关键实体**：识别主语、宾语、专有名词等关键实体，确保覆盖所有有意义的实体, 对于人物、组织、地点、专业属于、事件名称这些均为关键实体，原文出现就必须要提取出来，如果标题富含富含关键实体信息（人名、地名），也需要从标题中提取完整的实体信息）
+       - **类型判断**： 根据上下文语境，从 entity_types 中选择最贴切的实体类型
+       - **实体描述**： 对实体在事项中的作用进行说明
+
+    4. **输出结果** - 返回符合 Output 格式的 JSON
+
+    ## Input
+
+    这是用户输入的数据格式：
+
+    - `type`: 固定 `"request"`
+    - `data`:
+      - `items`: 内容片段数组，每个包含 `id`（1-based）和 `content`
+      - `meta`: 元信息
+        - `source_type`: 来源类型，枚举值 `article` | `chat`
+        - `source_title`: 来源标题，对应文档标题或对话标题
+        - `source_summary`: 文档摘要 或 对话摘要
+        - `previous_context`: 前文上下文（可选）
+        - `related_events`: 历史相关事项数组（可选）
+        - `entity_types`: 可用实体类型数组
+
+    ## Output
+
+    这是你需要返回的数据格式（注意 items 和 meta 都在 data 内部）:
+
+    - `type`: 固定 `"response"`
+    - `data`:
+      - `items`: 事项数组，每个包含：
+        - `title`: 事项标题, 核心主题概括
+        - `summary`: 事项摘要, 一句话摘要
+        - `content`: 事项内容, 独立可读，内容完整，表达流畅，不机械复制原文
+        - `category`: 事项分类，根据内容自动判断
+        - `keywords`: 关键词列表，提取5-10个核心词，包括专有名词、缩写、人名、组织、产品等（必填）
+        - `priority`: 优先级，枚举值 `HIGH` | `MEDIUM` | `LOW` | `UNKNOWN`
+        - `status`: 状态，枚举值 `COMPLETED` | `PROCESSING` | `PENDING` | `UNKNOWN`
+        - `references`: 引用片段索引数组，1-based（必填）
+        - `entities`: 实体数组，每个包含 `type`、`name`、`description`
+        - `is_valid`: 是否有效，布尔值
+        - `children`: 子事项数组，多层嵌套，结构同上
+      - `meta`: 元信息
+        - `reason`: 处理原因说明（必填）
+        - `confidence`: 置信度，0-1 之间的数值（可选）
+
+    ## Rules
+
+      **1. 事项提取-完整可读**
+      - 每个片段至少提取1个顶级事项，禁止空结果，不凭空捏造
+      - 每层事项必须有清晰的标题和完整内容，独立可读
+
+      **2. 事项提取-事项分层规则**
+      - 按语义单元分层：大事件 → 子事件 → 细节，最多2层嵌套
+      - 父事项被子事项穷尽覆盖：所有子事项合并能完全重现父事项内容
+      - 避免信息重复：子事项间避免内容重复，确保每个子事项独立贡献新信息
+      
+
+      **3. 事项提取-代词消歧规则**
+      - 子事项必须从父事项继承具体名称，将所有代词替换为完整指代对象
+      - 禁用："他"、"该公司"、"这个产品"、"这里"、"这本书"、"该项目"等
+      - 确保：每个事项脱离上下文仍能独立理解
+
+      **4. 实体提取 - 覆盖完整**
+      - 重点关注主语实体、谓语实体、宾语实体，特别是人物（姓名、身份、别称）、组织（公司、机构、团体、政府部门）、地点（地域、场所、地址）、时间（日期、年份，时期）、其他实体（事件名称、专业术语、奖项等）
+      - 覆盖所有有意义的实体，尤其是人名、组织、地点、时间，每个最细子事项中建议提取至少3个实体
+      - 相同实体的不同表达（全称、缩写、别称、中英文名）都要提取，不遗漏
+      - 如果标题富含富含关键实体信息（人名、地名），也需要从标题中提取完整的实体信息（包含 ‘#’ 为标题信息）
+      - 如果一个事件内有多个同类型的实体，请全部提取出来，并且‘和’，‘与’，‘及’等为实体的连接词，应该提取成两个实体，不应该作为一个整体被提出
+
+      **5. 实体提取 - 类型判断规则**
+      - 实体类型必须从 `entity_types` 中选择，结合 `entity_types` 的 `description` 选择实体类型，不允许自定义实体类型。
+      - 结合entity_types的description和上下文判断，选择最符合该实体在当前事项中作用的类型，如果实体可能属于多个类型，优先选择符合description中规定的类型，例如国家在description里被规定为location类型，则国家一律选择location类型。
+      - 实体类型优先级：优先使用具体类型，tags类型仅在其他类型均不匹配时使用
+
+
+      **6. 实体提取 - 描述规范规则**
+      - description 必须说明实体在事项中的具体作用、角色或关系，重点描述"做什么"或"是什么角色"
+
+      **7. 忠于原文**
+      - 整理而非创作，不添加、不臆测
+      - references 必须完整，包含所有相关片段索引
+
+      **8. 输出格式**
+      - 你输出的是 JSON 字符串，使用简体中文（可不用 markdown 代码块包裹）。我们的解析策略：先取整段回复，若被 ```json ... ``` 包裹则提取块内内容，再对该内容做标准 JSON 解析。字符串值内的英文双引号须写为 `\"`，否则解析失败。
+
+      {custom_requirements}
+
+      # 核心要求重复
+      **确保**：
+      - 父事项被子事项穷尽覆盖：所有子事项合并能完全重现父事项内容
+      - 子事项必须从父事项继承具体名称，将所有代词替换为完整指代对象
+      - 避免信息重复：子事项间避免内容重复，确保每个子事项独立贡献新信息
+      - 覆盖所有有意义的实体，尤其是人名、组织、地点、时间，每个最细子事项中建议提取至少3个实体
+      - 实体类型优先级：优先使用具体类型，tags类型仅在其他类型均不匹配时使用
+      - 给提取出的实体选择最贴切当前语境的类型
+
+  # ============================================================================
+  # 输出 Schema（统一格式：meta 在 data 内部）
+  # ============================================================================
+  output_schema:
+    type: object
+    required: [type, data]
+    properties:
+      type:
+        const: response
+      data:
+        type: object
+        required: [items, meta]
+        properties:
+          items:
+            type: array
+            items:
+              $ref: "#/definitions/event"
+          meta:
+            type: object
+            required: [reason]
+            properties:
+              reason:
+                type: string
+                description: 处理原因说明
+              confidence:
+                type: number
+                description: 置信度（0-1）
+
+  # ============================================================================
+  # 定义（支持层级嵌套）
+  # ============================================================================
+  definitions:
+    event:
+      type: object
+      required: [title, content, references, is_valid]
+      properties:
+        title:
+          type: string
+          description: 事项标题
+        summary:
+          type: string
+          description: 事项摘要
+        content:
+          type: string
+          description: 事项内容
+        category:
+          type: string
+          description: 事项分类，根据内容自动判断
+        keywords:
+          type: array
+          items:
+            type: string
+          description: 关键词列表（5-10个核心词，包括专有名词、缩写、人名、组织、产品等）
+        priority:
+          type: string
+          enum: [HIGH, MEDIUM, LOW, UNKNOWN]
+          description: 优先级
+        status:
+          type: string
+          enum: [UNKNOWN, PENDING, PROCESSING, COMPLETED]
+          description: 状态
+        references:
+          type: array
+          description: 引用片段索引数组（1-based），必须完整引用所有相关片段
+          items:
+            type: integer
+          minItems: 1
+        entities:
+          type: array
+          items:
+            $ref: "#/definitions/entity"
+        is_valid:
+          type: boolean
+          description: 是否有效
+        children:
+          type: array
+          description: 子事项数组（支持嵌套）
+          items:
+            $ref: "#/definitions/event"
+
+    entity:
+      type: object
+      required: [type, name, description]
+      properties:
+        type:
+          type: string
+          description: 实体类型（必须从 meta.entity_types 中选择）
+        name:
+          type: string
+          description: 实体名称
+        description:
+          type: string
+          description: 实体在当前事项中的具体作用、角色或关系说明
+
+  # ============================================================================
+  # 示例（用于 Few-shot learning）
+  # 涵盖规则：过滤噪音、分层组织、代词消歧、实体完整覆盖、类型判断、描述规范
+  # ============================================================================
+  examples:
+    input: |
+      {
+        "type": "request",
+        "data": {
+          "items": [
+            {"id": 1, "content": "2024年3月15日，人工智能(AI)领域迎来重大突破。"},
+            {"id": 2, "content": "美国OpenAI公司正式发布GPT-5大语言模型，支持100万token上下文窗口。"},
+            {"id": 3, "content": "该模型还引入了全新的推理引擎，推理速度提升3倍，并在多个基准测试中刷新记录。"},
+            {"id": 4, "content": "其CEO Sam Altman表示，这标志着通用人工智能(AGI)迈出关键一步。"},
+            {"id": 5, "content": "谷歌同日回应，DeepMind团队发布Gemini 2.0，在MMLU测试中达到92.3%。"},
+            {"id": 6, "content": "更多热点> 评论区> 推荐阅读[科技头条]"},
+            {"id": 7, "content": "分享到微博 关注我们"}
+          ],
+          "meta": {
+            "source_type": "article",
+            "source_title": "AI大模型竞赛白热化：OpenAI与谷歌同日发布新品",
+            "source_summary": "2024年3月OpenAI发布GPT-5，谷歌发布Gemini 2.0，两大科技巨头展开正面竞争",
+            "entity_types": [
+              {"type": "time", "description": "时间点、时间范围或周期"},
+              {"type": "organization", "description": "组织机构，包括公司、机构等"},
+              {"type": "product", "description": "产品，包括软件、硬件等"},
+              {"type": "person", "description": "人物，包括个人姓名、职位等"},
+              {"type": "subject", "description": "核心话题、概念、领域、现象等"},
+              {"type": "metric", "description": "可量化的度量，保留原始格式"},
+              {"type": "location", "description": "地点、国家、地区等"}
+            ]
+          }
+        }
+      }
+    output: |
+      {
+        "type": "response",
+        "data": {
+          "items": [{
+            "title": "OpenAI与谷歌同日发布新一代AI大模型",
+            "summary": "2024年3月15日，OpenAI发布GPT-5，谷歌发布Gemini 2.0，两大科技巨头在AI领域展开正面竞争",
+            "content": "2024年3月15日，人工智能领域迎来重大突破。美国OpenAI公司正式发布GPT-5大语言模型，支持100万token上下文窗口，引入全新推理引擎，推理速度提升3倍，并在多个基准测试中刷新记录。OpenAI CEO Sam Altman表示，这标志着通用人工智能迈出关键一步。谷歌同日回应，DeepMind团队发布Gemini 2.0，在MMLU测试中达到92.3%。",
+            "category": "科技",
+            "keywords": ["AI大模型", "GPT-5", "Gemini 2.0", "OpenAI", "谷歌"],
+            "priority": "HIGH",
+            "status": "COMPLETED",
+            "references": [1, 2, 3, 4, 5],
+            "entities": [
+              {"type": "time", "name": "2024年3月15日", "description": "两家公司同时发布新产品的具体日期"},
+              {"type": "subject", "name": "AI", "description": "人工智能的英文缩写，与人工智能是同一概念"},
+              {"type": "organization", "name": "OpenAI", "description": "发布GPT-5的美国人工智能公司"},
+              {"type": "organization", "name": "谷歌", "description": "发布Gemini 2.0的科技公司"},
+              {"type": "organization", "name": "Google", "description": "谷歌的英文名称"}
+            ],
+            "is_valid": true,
+            "children": [
+              {
+                "title": "OpenAI发布GPT-5大语言模型",
+                "summary": "GPT-5支持100万token上下文，推理速度提升3倍，Sam Altman称这是迈向AGI的关键一步",
+                "content": "美国OpenAI公司正式发布GPT-5大语言模型，支持100万token上下文窗口。GPT-5还引入了全新的推理引擎，推理速度提升3倍，并在多个基准测试中刷新记录。OpenAI CEO Sam Altman表示，GPT-5标志着通用人工智能迈出关键一步。",
+                "category": "科技",
+                "keywords": ["GPT-5", "OpenAI", "100万token"],
+                "priority": "HIGH",
+                "status": "COMPLETED",
+                "references": [2, 3, 4],
+                "entities": [
+                  {"type": "organization", "name": "OpenAI", "description": "发布GPT-5的人工智能公司"},
+                  {"type": "product", "name": "GPT-5", "description": "OpenAI发布的新一代大语言模型产品"},
+                  {"type": "product", "name": "GPT-5大语言模型", "description": "GPT-5的完整产品名称"},
+                  {"type": "person", "name": "Sam Altman", "description": "OpenAI的首席执行官，对GPT-5进行评价"},
+                  {"type": "person", "name": "CEO Sam Altman", "description": "Sam Altman的完整职位表达"},
+                  {"type": "subject", "name": "AGI", "description": "通用人工智能的英文缩写"}
+                ],
+                "is_valid": true,
+                "children": []
+              },
+              {
+                "title": "谷歌发布Gemini 2.0多模态模型",
+                "summary": "谷歌DeepMind团队发布Gemini 2.0，在MMLU测试中达到92.3%",
+                "content": "谷歌同日回应，DeepMind团队发布Gemini 2.0，在MMLU测试中达到92.3%。",
+                "category": "科技",
+                "keywords": ["Gemini 2.0", "谷歌", "多模态", "MMLU"],
+                "priority": "HIGH",
+                "status": "COMPLETED",
+                "references": [5],
+                "entities": [
+                  {"type": "organization", "name": "谷歌", "description": "发布Gemini 2.0的科技公司"},
+                  {"type": "organization", "name": "DeepMind", "description": "谷歌旗下负责开发Gemini 2.0的AI研究团队"},
+                  {"type": "organization", "name": "DeepMind团队", "description": "DeepMind的团队表达方式"},
+                  {"type": "product", "name": "Gemini 2.0", "description": "谷歌发布的新一代多模态大模型"},
+                  {"type": "subject", "name": "MMLU", "description": "用于评估Gemini 2.0性能的基准测试"},
+                  {"type": "subject", "name": "MMLU测试", "description": "MMLU基准测试的完整表达"}
+                ],
+                "is_valid": true,
+                "children": []
+              }
+            ]
+          }],
+          "meta": {
+            "reason": "成功过滤噪音（id 6、7），保留有效内容。按语义分为2个子事项：OpenAI和谷歌的产品发布。重点体现：1)代词消歧-将'该模型''其CEO'替换为'GPT-5''OpenAI CEO'；2)实体完整性-提取全称+缩写（AI/人工智能、AGI/通用人工智能）；3)类型精确-Sam Altman为person、OpenAI为organization；4)描述规范-说明实体的作用而非重复名称",
+            "confidence": 0.95
+          }
+        }
+      }

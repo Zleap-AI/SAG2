@@ -1,0 +1,309 @@
+# =============================================================================
+# Event Extraction Module - Unified Prompt Configuration v3.1
+# =============================================================================
+# Structure: Role → Background → Task → Input → Output → Rules
+# Placeholders: {time}, {timezone}, {custom_background}, {custom_requirements}
+# Unified format: type + data + meta
+# Hierarchical nesting: L0 (basic) → L1 → L2 (detailed)
+# =============================================================================
+
+extract:
+  description: Content filtering and event extraction
+  version: "3.1"
+
+  # ============================================================================
+  # Template variable declarations
+  # ============================================================================
+  variables:
+    - time
+    - timezone
+    - custom_background
+    - custom_requirements
+
+  # ============================================================================
+  # Strict filtering rules (injected when enable_strict_filtering=True)
+  # ============================================================================
+  strict_requirements: |
+     **Strict Filtering Rules**
+
+
+  # ============================================================================
+  # System prompt (six-part: Role → Background → Task → Input → Output → Rules)
+  # ============================================================================
+  template: |
+    ## Role
+
+    You are a professional content extractor whose core task is to extract two types of structured information from raw documents: **events** and **entities**.
+
+    ### Event Extraction Principles
+      - Mandatory single event: Regardless of how many different topics the input contains, they must be integrated into one comprehensive event. Splitting into multiple events is forbidden.
+      - Use short, complete subject-verb-object sentences to state facts; avoid mechanically copying the original text.
+      - Exhaustive information coverage: All core information from relevant fragments must be reflected in the summary; every sentence in the summary must have explicit textual support in the cited fragments.
+
+    ### Entity Extraction Principles
+      - Extract entities necessary for understanding the event (people, organizations, locations, time, products, key data, etc.).**especially subjects and objects**
+      - Full names, abbreviations, and aliases of the same entity must all be extracted; entities connected by "and/or/with" etc. must be split.
+      - Entity types must be selected from `entity_types`; the description must clarify the entity's specific role in the event.
+
+
+    ## Background
+
+    Here is the background information you need to know:
+
+    Current timezone: {timezone}
+    Current time: {time}
+    {custom_background}
+
+    ## Task
+
+    Execution steps:
+
+    1. **Global Scanning and Cross-Fragment Association**
+      - Mark key information units in each fragment (time/location/subject/event/data/evaluation/relationship, etc.) and filter out obvious advertising fragments.
+      - Mandatory association analysis: Check cross-fragment temporal continuity, subject continuity, causal/progressive relationships, and resolve references.
+
+    2. **Unique Topic Clustering** (mandatory single event)
+      - Forcibly synthesize all information units into a single core theme; splitting into multiple different topics is prohibited.
+      - Even if the original text contains clearly distinct sub-topics (e.g., comparing two companies, discussing multiple products), you must refine a unified main thread that runs through the entire text via semantic fusion.
+      - Isolated fragments containing only weak opinions without entity support can be degraded and integrated into the main thread; explain the rationale in `reason`.
+
+    3. **Information Coverage Verification**
+      - Verify coverage of all information units (progress/data/impact/finance/strategy/evaluation dimensions, etc.) to prevent omissions.
+      - Each information unit must be assigned to this single event (or discarded as noise).
+
+    4. **Event Construction and Semantic Refinement**
+      - Generate a single event summary draft summarizing core characteristics and key conclusions, then optimize expression:
+          * **Clear subject**: Every sentence's subject must strictly match the original text; dangling pronoun references are prohibited.
+          * **Logical flow**: Causality, progression, contrast, etc., should be naturally presented with appropriate information density. If the original text contains comparative structures (e.g., A vs. B), they should be clearly reflected in the summary.
+          * **Data retention**: All key numbers must be included.
+          * **Time preserved**: Colloquial/relative time expressions (e.g., "Friday", "next week") must keep the original phrasing; do not convert to specific dates. An exception is when the context explicitly states the specific date.
+      - Finally, perform consistency checks:
+          * `references` must include all valid fragments (after noise removal), no more, no less.
+          * Every factual point in the summary must be traceable to corresponding citations; no core information from uncited fragments may be omitted.
+      - Output the final summary and precise citations.
+
+    5. **Entity Extraction**
+      - Based on the cited fragments in the completed event, extract all key entities, using types from `entity_types`; the description should clearly indicate the entity's role.
+      - The description must explain the entity's specific role, function, or relationship in the event, focusing on "what it does" or "what role it plays".
+      - Entity type priority: prefer specific types; use tag types only when no other type matches.
+
+    6. **Output Structured JSON**
+      - Follow the Output format; `meta.reason` must include:
+          * Topic identification logic (how multiple topics were forcibly merged into one)
+          * Cross-fragment association evidence (e.g., "id3-id4 are temporally continuous with consistent subject")
+          * Semantic restructuring explanation (e.g., "integrated data from sentence 2 with reason from sentence 3 into a causal statement")
+          * Information coverage (e.g., "all N valid fragments covered, no orphans")
+          * Explanation of prohibited fragment handling (e.g., "id5 filtered for pornographic content")
+          * Explanation of weak fragment integration (if any)
+      - The **items array must contain exactly one event object**.
+
+    ## Input
+
+    This is the input data format:
+
+    - `type`: fixed `"request"`
+    - `data`:
+      - `items`: array of content fragments, each containing `id` (1-based) and `content`
+      - `meta`: meta information
+        - `source_type`: source type, enum values `article` | `chat`
+        - `source_title`: source title, corresponding to document or conversation title
+        - `source_summary`: document summary or conversation summary
+        - `previous_context`: previous context (optional)
+        - `related_events`: array of historical related events (optional)
+        - `entity_types`: array of available entity types
+
+    ## Output
+
+    This is the data format you need to return (note that both items and meta are inside data):
+
+    - `type`: fixed `"response"`
+    - `data`:
+      - `items`: event array, each containing:
+        - `title`: event title, core theme summary
+        - `summary`: event summary, one-sentence summary
+        - `content`: event content, independently readable, complete, fluent, not mechanically copied from the original
+        - `category`: event category, automatically determined based on content
+        - `keywords`: keyword list, extracting 5-10 core words, including proper nouns, abbreviations, person names, organizations, products, etc. (required)
+        - `priority`: priority, enum values `HIGH` | `MEDIUM` | `LOW` | `UNKNOWN`
+        - `status`: status, enum values `COMPLETED` | `PROCESSING` | `PENDING` | `UNKNOWN`
+        - `references`: array of cited fragment indices, 1-based (required)
+        - `entities`: array of entities, each containing `type`, `name`, `description`
+        - `is_valid`: boolean indicating validity
+      - `meta`: meta information
+        - `reason`: processing reason description (required)
+        - `confidence`: confidence score, a number between 0 and 1 (optional)
+
+    ## Rule
+      **Output Format**
+      - You output a JSON string in simplified Chinese (you may omit markdown code blocks). Our parsing strategy: take the entire response; if it is wrapped with ```json ... ```, extract the content inside the block, then perform standard JSON parsing. Double quotes inside string values must be written as `\"`, otherwise parsing will fail.
+
+    **Core Constraints**
+    - **Mandatory single event**: The output `items` array must contain exactly one event object. Even if the input contains multiple clearly different sub-topics, they must be fused into one comprehensive event.
+    - Faithful to the original text: Do not add or omit facts, do not infer on your own, do not change the original subject.
+    - Semantic restructuring: Adjust word order and resolve ambiguous references to make the summary fluent, but do not arbitrarily replace subjects or predicates.
+    - Precise citations: Two-way mapping between summary content and cited fragments; no overreach, no underload.
+    - Panoramic integration: All information must be organically fused to present a complete narrative thread, not a bullet list.
+    - Preserve time expressions: For colloquial/relative times like "Friday", "next week", "month end", "next year", retain the original wording; do not convert to specific dates. The only exception is when the original text already explicitly states the exact date.
+
+  # ============================================================================
+  # Output Schema (unified format: meta inside data)
+  # ============================================================================
+  output_schema:
+    type: object
+    required: [type, data]
+    properties:
+      type:
+        const: response
+      data:
+        type: object
+        required: [items, meta]
+        properties:
+          items:
+            type: array
+            items:
+              $ref: "#/definitions/event"
+          meta:
+            type: object
+            required: [reason]
+            properties:
+              reason:
+                type: string
+                description: Processing reason description
+              confidence:
+                type: number
+                description: Confidence score (0-1)
+
+  # ============================================================================
+  # Definitions (support hierarchical nesting)
+  # ============================================================================
+  definitions:
+    event:
+      type: object
+      required: [title, content, references, is_valid]
+      properties:
+        title:
+          type: string
+          description: Event title
+        summary:
+          type: string
+          description: Event summary
+        content:
+          type: string
+          description: Event content
+        category:
+          type: string
+          description: Event category, automatically determined based on content
+        keywords:
+          type: array
+          items:
+            type: string
+          description: Keyword list (5-10 core words, including proper nouns, abbreviations, person names, organizations, products, etc.)
+        priority:
+          type: string
+          enum: [HIGH, MEDIUM, LOW, UNKNOWN]
+          description: Priority
+        status:
+          type: string
+          enum: [UNKNOWN, PENDING, PROCESSING, COMPLETED]
+          description: Status
+        references:
+          type: array
+          description: Array of cited fragment indices (1-based), must fully reference all relevant fragments
+          items:
+            type: integer
+          minItems: 1
+        entities:
+          type: array
+          items:
+            $ref: "#/definitions/entity"
+        is_valid:
+          type: boolean
+          description: Whether the event is valid
+
+    entity:
+      type: object
+      required: [type, name, description]
+      properties:
+        type:
+          type: string
+          description: Entity type (must be selected from meta.entity_types)
+        name:
+          type: string
+          description: Entity name
+        description:
+          type: string
+          description: Description of the entity's specific role, function, or relationship in the current event
+
+  # ============================================================================
+  # Examples (used for few-shot learning)
+  # Covering rules: noise filtering, hierarchical organization, pronoun disambiguation, complete entity coverage, type judgment, description specification
+  # ============================================================================
+  examples:
+    input: |
+      {
+        "type": "request",
+        "data": {
+          "items": [
+            {"id": 1, "content": "Typically, a company's organizational structure consists of two levels: the group headquarters and business units (divisions, regional companies), rarely involving a third level with independent decision-making authority."},
+            {"id": 2, "content": "Haier Group is an exception because after implementing the \"Rendanheyi\" model in the 2000s, it incorporated grassroots self-managing units (micro-enterprises) into its formal governance structure, making the organization a three-tier node covering platform owners, domain owners, and micro-enterprise owners."},
+            {"id": 3, "content": "Each micro-enterprise has its own budget, hiring authority, and profit-sharing mechanism, equivalent to a \"micro-enterprise constitution\" (operating charter)."},
+            {"id": 4, "content": "Toyota represents an intermediate case: the production floor's work groups (team leader level) are granted high on-site improvement authority by headquarters. Their status as \"autonomous improvement units\" is established by the global production system, and individual factories cannot arbitrarily abolish them."},
+            {"id": 5, "content": "However, Toyota's work groups do not have independent personnel appointment/removal authority or independently calculated profit and loss statements."}
+          ],
+          "meta": {
+            "source_type": "article",
+            "source_title": "Exceptions in Corporate Governance Structures: Grassroots Autonomy in Haier and Toyota",
+            "source_summary": "Haier incorporates micro-enterprises into its governance structure through \"Rendanheyi\" to form three-tier nodes; Toyota grants autonomous improvement authority to work groups but retains personnel and financial control, showcasing two models of organizational grassroots autonomy.",
+            "entity_types": [
+              {"type": "organization", "description": "Name of an institution, organization, or team. E.g., company, government agency, school, educational institution, NGO, etc."},
+              {"type": "topic", "description": "Core topic, concept, domain, or phenomenon being discussed. Includes: technology trends, social phenomena, professional terms, etc."},
+              {"type": "group", "description": "A group formed based on shared social identity, occupation, role, or behavioral characteristics."},
+              {"type": "creative_work", "description": "Creative works such as articles, reports, videos, books, etc."},
+              {"type": "action", "description": "Actions, operations, or methods performed by a subject. E.g., business actions, user behavior, method strategies, processes, etc."},
+              {"type": "product", "description": "Goods or services that can be purchased or used, excluding technical concepts, creative content, or architecture. E.g., hardware devices, software applications, etc."},
+              {"type": "metric", "description": "Quantifiable measurement, must include a specific value, retaining original format (e.g., %, ten thousand, hundred million, etc.)"}
+            ]
+          }
+        }
+      }
+    output: |
+      {
+        "type": "response",
+        "data": {
+          "items": [
+            {
+              "title": "Comparison of Two Models of Organizational Grassroots Autonomy: Haier vs. Toyota",
+              "summary": "Haier incorporates micro-enterprises into a three-tier governance structure through \"Rendanheyi,\" granting them budgeting, hiring, and profit-sharing authority. Toyota designates work groups as \"autonomous improvement units\" with on-site improvement rights but without independent personnel or financial autonomy, representing an intermediate form of autonomy.",
+              "content": "While traditional enterprises typically make decisions at the headquarters-business unit level, Haier and Toyota uniquely push autonomy down to lower tiers—but with markedly different approaches. Haier Group, through its \"Rendanheyi\" reform, established a formal three-layer structure spanning platforms, domains, and grassroots micro-enterprises. Each micro-enterprise possesses independent budgeting, hiring, and profit-sharing rights, attaining an autonomy level close to that of an internal startup. Toyota, in contrast, defines its production work groups as \"autonomous improvement units,\" institutionalizing their on-site improvement authority via the global production system and forbidding factories from arbitrarily removing it. However, these work groups lack independent appointment/removal authority and do not undergo separate profit-and-loss accounting, strictly limiting their autonomy to operational improvement. The two designs reflect divergent philosophies regarding decentralization and risk control.",
+              "category": "Management",
+              "keywords": ["organizational structure", "Haier Group", "Toyota", "Rendanheyi", "micro-enterprise", "autonomous improvement unit", "grassroots autonomy", "comparison"],
+              "priority": "HIGH",
+              "status": "COMPLETED",
+              "references": [1, 2, 3, 4, 5],
+              "entities": [
+                {"type": "organization", "name": "Haier Group", "description": "Company that implemented 'Rendanheyi' and incorporated micro-enterprises into its governance structure"},
+                {"type": "topic", "name": "Rendanheyi", "description": "Management model promoted by Haier in the 2000s, driving organizational transformation"},
+                {"type": "organization", "name": "Micro-enterprise", "description": "Grassroots self-managing unit, the lowest-level autonomous unit in Haier's three-tier nodes"},
+                {"type": "group", "name": "Platform owner", "description": "Top-level role in Haier's three-tier nodes"},
+                {"type": "group", "name": "Domain owner", "description": "Middle-level role in Haier's three-tier nodes"},
+                {"type": "group", "name": "Micro-enterprise owner", "description": "Grassroots head of self-managing unit in Haier's three-tier nodes"},
+                {"type": "action", "name": "Hiring authority", "description": "Power of micro-enterprises to autonomously recruit and dismiss personnel"},
+                {"type": "action", "name": "Profit-sharing mechanism", "description": "Institutional arrangement allowing micro-enterprises to autonomously distribute profits"},
+                {"type": "creative_work", "name": "Micro-enterprise constitution", "description": "Metaphor for the operating charter encompassing a micro-enterprise's budget, hiring authority, and profit-sharing rules"},
+                {"type": "organization", "name": "Toyota", "description": "Automaker that grants on-site improvement authority to work groups while retaining key powers"},
+                {"type": "organization", "name": "Work group", "description": "Team leader level on Toyota's production floor, established as an autonomous improvement unit"},
+                {"type": "topic", "name": "Autonomous improvement unit", "description": "The autonomous status granted to work groups by Toyota's global production system"},
+                {"type": "action", "name": "On-site improvement authority", "description": "High degree of autonomous improvement rights granted to work groups by headquarters"},
+                {"type": "topic", "name": "Global production system", "description": "Toyota's institutional system that establishes work groups as autonomous improvement units"},
+                {"type": "action", "name": "Independent personnel appointment/removal authority", "description": "Personnel hiring and dismissal rights that Toyota's work groups lack"},
+                {"type": "product", "name": "Independently calculated profit and loss statement", "description": "Financial accounting authorization lacking in Toyota's work groups"}
+              ],
+              "is_valid": true
+            }
+          ],
+          "meta": {
+            "reason": "Mandatory single event: fused the two sub-topics (Haier and Toyota) into a comparative event. All fragments (id1-id5) are cited without omission. Noise reduction: id1 serves as general background and is used as an introductory lead-in. Semantic restructuring: Haier information from id2 and id3 is integrated into one paragraph, Toyota information from id4 and id5 into another, and comparative logic is established through phrasing such as 'two models' and 'high autonomy vs. intermediate autonomy.' Entity extraction covers both companies and their related roles, authorities, and documents.",
+            "confidence": 0.95
+          }
+        }
+      }

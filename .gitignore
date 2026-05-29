@@ -1,0 +1,101 @@
+# ==================== Python ====================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# ==================== Virtual Environment ====================
+.venv/
+venv/
+ENV/
+env/
+
+# ==================== IDE ====================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# ==================== Testing ====================
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
+
+# ==================== Environment Variables ====================
+.env
+.env.s*
+!.env.sample
+
+# ==================== Logs ====================
+*.log
+logs/
+
+# ==================== Database ====================
+*.db
+*.sqlite
+*.sqlite3
+
+# ==================== Docker ====================
+*_data/
+
+# ==================== Documentation ====================
+docs/_build/
+site/
+
+# ==================== Project Specific ====================
+# Output and temporary files
+output/
+data/
+uploads/
+temp/
+tmp/
+.history/
+references/
+web_chunk_test/
+
+# Evaluation results
+pipeline/evaluation/markdown_datasets/
+pipeline/evaluation/source/
+pipeline/evaluation/badcases/
+pipeline/evaluation/rerank_results/
+pipeline/evaluation/corpus_datasets/
+pipeline/evaluation/source_wildGraph/
+pipeline/evaluation/outputs/
+pipeline/evaluation/recall_results/
+pipeline/evaluation/expand_results/
+evaluation/hotpotqa_evaluation/data/
+
+# Test fixtures
+tests/load/md/
+tests/extract/test_result.json
+
+# Web
+web/package-lock.json
+
+# Scripts
+start.sh
+
+# Code
+.codegraph/
+.claude/

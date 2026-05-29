@@ -1,0 +1,85 @@
+version: '3.8'
+
+services:
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
+    container_name: new_sag_elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      # - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+      - "ES_JAVA_OPTS=-Xms2g -Xmx2g"
+    ports:
+      - "${ES_PORT:-9200}:9200"
+      - "9300:9300"
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test:
+        ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    networks:
+      - sag2_network
+
+  mysql:
+    image: mysql:8.0
+    container_name: sag2_mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: sag2_root
+      MYSQL_DATABASE: sag2
+      MYSQL_USER: sag2
+      MYSQL_PASSWORD: sag2_pass
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    volumes:
+      - sag2_mysql_data:/var/lib/mysql
+    command: >
+      --default-authentication-plugin=mysql_native_password
+      --skip-name-resolve=0
+      --max-allowed-packet=64M
+      --innodb-buffer-pool-size=512M
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - sag2_network
+
+  mlflow:
+    image: ghcr.nju.edu.cn/mlflow/mlflow:latest
+    container_name: sag2_mlflow
+    environment:
+      - MLFLOW_BACKEND_STORE_URI=sqlite:///mlflow/mlflow.db
+      - MLFLOW_DEFAULT_ARTIFACT_ROOT=/mlflow/artifacts
+    command: >
+      mlflow server
+      --backend-store-uri sqlite:///mlflow/mlflow.db
+      --default-artifact-root /mlflow/artifacts
+      --host 0.0.0.0
+      --port 5000
+    ports:
+      - "${MLFLOW_PORT:-5000}:5000"
+    volumes:
+      - mlflow_data:/mlflow
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:5000/health')\" || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    networks:
+      - sag2_network
+
+volumes:
+  es_data:
+    driver: local
+  sag2_mysql_data:
+    driver: local
+  mlflow_data:
+    driver: local
+
+networks:
+  sag2_network:
+    driver: bridge

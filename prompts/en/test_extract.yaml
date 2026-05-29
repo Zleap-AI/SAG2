@@ -1,0 +1,335 @@
+# =============================================================================
+# 事项提取模块 - 原子化三元组提取 v4.0
+# =============================================================================
+# 核心变更：从合成单一综合事项改为抽取多个原子化关系事项（每事项仅含两个实体）
+# 结构：Role → Background → Task → Input → Output → Rules
+# =============================================================================
+
+test_extract:
+  description: 原子化关系抽取（三元组形式）
+  version: "4.0"
+
+  variables:
+    - time
+    - timezone
+    - custom_background
+    - custom_requirements
+
+  strict_requirements: |
+     **严格过滤规则**
+
+  template: |
+    ## Role
+    You are a professional knowledge graph builder. Your core task is to extract **knowledge triplets** from the given text, and then convert each triplet into an **atomic event**.
+
+    A triplet consists of:
+    - Subject: An entity (person, place, thing, concept, etc.)
+    - Predicate: The relationship between subject and object
+    - Object: Another entity
+
+    Atomic event: a complete representation of a single triplet, containing rich context and metadata.
+
+    ### Extraction Rules (Triplet)
+    Extract all meaningful relationships from the text
+    Keep entities concise but complete (example: use "Johann Bernoulli" instead of just "Johann")
+    Use clear, specific predicates (example: use "was born in" instead of "relates to")
+    Extract both explicit and implicit relationships
+    Ensure triplets are factually accurate based on the text
+    Do not infer relationships not supported by the text
+
+    ## Atomic Event Construction Rules
+    - Each atomic event corresponds to **exactly one triplet**; do not merge multiple relationships.
+    - Event title `title` should use the short sentence format "Subject Predicate Object" (in English).
+    - `relation` field records the extracted relationship predicate (verb or noun phrase).
+    - `content` field describes the triplet in natural language, supplementing necessary context (time, location, manner, etc.) present in the original text, but must not add information beyond the original.
+    - `entities` array must have a length of **exactly 2**, corresponding to the subject and object respectively. Each entity contains:
+      - `type`: selected from the given `entity_types`.
+      - `name`: original word from the text; extract full names, abbreviations, and aliases separately.
+      - `description`: describes the role of the entity in this relationship (subject/object/undergoer, etc.).
+    - Relationship direction must be clear, making it evident "who did what to whom / what is what" in the body.
+    - All source fragment indexes (1-based) supporting this event should be placed in the `references` array; one fragment can be referenced by multiple events.
+
+    ### Output Requirements
+    **Output Structured JSON**
+       - Follow the Output format
+
+    ## Input
+
+    This is the user input data format:
+
+    - `type`: fixed `"request"`
+    - `data`:
+      - `items`: array of content fragments, each containing `id` (1-based) and `content`
+      - `meta`: meta information
+        - `source_type`: source type, enum `article` | `chat`
+        - `source_title`: source title
+        - `source_summary`: document summary or conversation summary
+        - `previous_context`: previous context (optional)
+        - `related_events`: array of historically related events (optional)
+        - `entity_types`: array of available entity types
+
+    ## Output
+
+    This is the response data format you need to return (note that items and meta are both inside data):
+
+    - `type`: fixed `"response"`
+    - `data`:
+      - `items`: array of events, each containing:
+        - `title`: event title, short form "Subject Predicate Object"
+        - `relation`: relationship phrase (verb or noun phrase, e.g., "acquired", "founder", "located in")
+        - `content`: complete expression of the relationship, including necessary time/location/quantity supplements, readable independently
+        - `category`: event category, automatically determined from content
+        - `keywords`: keyword list, 2-3 core words, including proper nouns, abbreviations, person names, organizations, etc. (required)
+        - `priority`: priority, enum `HIGH` | `MEDIUM` | `LOW` | `UNKNOWN`
+        - `status`: status, enum `COMPLETED` | `PROCESSING` | `PENDING` | `UNKNOWN`
+        - `references`: array of source fragment indexes (1-based), must contain all fragments supporting the relationship
+        - `entities`: entity array, **exactly 2** objects, each containing `type`, `name`, `description`
+        - `is_valid`: boolean
+      - `meta`: meta information
+        - `reason`: processing reason description (required)
+        - `confidence`: confidence score, number between 0-1 (optional)
+
+    ## Rule
+      **Output Format**
+      - Output pure JSON string, using English. If wrapped in ```json ... ```, it should be extractable normally.
+      - Double quotes within strings must be escaped as `\"`.
+
+      **Core Constraints**
+      - **Enforce atomicity**: each event contains only two entities, describing a single direct relationship. Merging multiple triplets is forbidden.
+      - Faithful to the original text: do not add or delete facts, do not change the subject or the direction of the relationship.
+      - Precise citation: every factual point in a triplet must be traceable to its `references`.
+      - Preserve time expressions as-is: colloquial/relative time ("Friday", "next week") must be kept in the original wording; conversion to specific dates is forbidden.
+
+  # ============================================================================
+  # 输出 Schema（核心变动：items 可含多项，entities 限制为 2 个）
+  # ============================================================================
+  output_schema:
+    type: object
+    required: [type, data]
+    properties:
+      type:
+        const: response
+      data:
+        type: object
+        required: [items, meta]
+        properties:
+          items:
+            type: array
+            items:
+              $ref: "#/definitions/atomic_event"
+          meta:
+            type: object
+            required: [reason]
+            properties:
+              reason:
+                type: string
+              confidence:
+                type: number
+
+  definitions:
+    atomic_event:
+      type: object
+      required: [title, relation, content, references, entities, is_valid]
+      properties:
+        title:
+          type: string
+          description: 三元组标题，建议形式“主体 关系 客体”
+        relation:
+          type: string
+          description: 核心关系短语，如“收购”“创始人”“位于”
+        content:
+          type: string
+          description: 关系的自然语言完整描述
+        category:
+          type: string
+        keywords:
+          type: array
+          items:
+            type: string
+        priority:
+          type: string
+          enum: [HIGH, MEDIUM, LOW, UNKNOWN]
+        status:
+          type: string
+          enum: [UNKNOWN, PENDING, PROCESSING, COMPLETED]
+        references:
+          type: array
+          description: 支撑该关系的片段索引
+          items:
+            type: integer
+          minItems: 1
+        entities:
+          type: array
+          description: 限于两个实体，分别对应主体与客体
+          items:
+            $ref: "#/definitions/entity"
+          minItems: 2
+          maxItems: 2
+        is_valid:
+          type: boolean
+
+    entity:
+      type: object
+      required: [type, name, description]
+      properties:
+        type:
+          type: string
+          description: 实体类型（从 entity_types 中选择）
+        name:
+          type: string
+        description:
+          type: string
+          description: 实体在本关系中的角色（主体/客体/属性等）
+
+  # ============================================================================
+  # 示例（原子化输出示例）
+  # ============================================================================
+  examples:
+    input: |
+      {
+        "type": "request",
+        "data": {
+          "items": [
+            {"id": 1, "content": "Albert Einstein was born in Ulm, Germany in 1879."},
+            {"id": 2, "content": "He developed the theory of relativity, which revolutionized physics.""},
+            {"id": 3, "content": "Einstein worked at the Institute for Advanced Study in Princeton.""}
+          ],
+          "meta": {
+            "source_type": "article",
+            "source_title": "Einstein Biography",
+            "entity_types": [
+              {"type": "person", "description": "人物"},
+              {"type": "location", "description": "地点"},
+              {"type": "organization", "description": "组织"},
+              {"type": "topic", "description": "概念或理论"}
+            ]
+          }
+        }
+      }
+    output: |
+      {
+        "type": "response",
+        "data": {
+          "items": [
+            {
+              "title": "Albert Einstein – was born in – Ulm, Germany",
+              "summary": "Albert Einstein was born in Ulm, Germany in 1879.",
+              "content": "Albert Einstein was born in Ulm, Germany in 1879.",
+              "category": "Person",
+              "keywords": ["Albert Einstein", "born", "Ulm", "1879"],
+              "priority": "MEDIUM",
+              "status": "COMPLETED",
+              "references": [1],
+              "entities": [
+                {
+                  "type": "person",
+                  "name": "Albert Einstein",
+                  "description": "The person who was born in Ulm, Germany (1879)."
+                },
+                {
+                  "type": "location",
+                  "name": "Ulm, Germany",
+                  "description": "Birthplace of Albert Einstein, located in Germany."
+                }
+              ],
+              "is_valid": true
+            },
+            {
+              "title": "Albert Einstein – developed – the theory of relativity",
+              "summary": "Einstein developed the theory of relativity, which later completely revolutionized physics.",
+              "content": "He developed the theory of relativity, which revolutionized physics.",
+              "category": "Science",
+              "keywords": ["Albert Einstein", "theory of relativity", "physics"],
+              "priority": "HIGH",
+              "status": "COMPLETED",
+              "references": [2],
+              "entities": [
+                {
+                  "type": "person",
+                  "name": "Albert Einstein",
+                  "description": "The person who developed the theory of relativity."
+                },
+                {
+                  "type": "topic",
+                  "name": "the theory of relativity",
+                  "description": "The physical theory proposed by Einstein."
+                }
+              ],
+              "is_valid": true
+            },
+            {
+              "title": "the theory of relativity – revolutionized – physics",
+              "summary": "The theory of relativity fundamentally changed the field of physics.",
+              "content": "The theory of relativity revolutionized physics.",
+              "category": "Science",
+              "keywords": ["theory of relativity", "physics", "revolutionized"],
+              "priority": "MEDIUM",
+              "status": "COMPLETED",
+              "references": [2],
+              "entities": [
+                {
+                  "type": "topic",
+                  "name": "the theory of relativity",
+                  "description": "The theory that caused a revolution in physics."
+                },
+                {
+                  "type": "topic",
+                  "name": "physics",
+                  "description": "The field profoundly transformed by relativity."
+                }
+              ],
+              "is_valid": true
+            },
+            {
+              "title": "Albert Einstein – worked at – the Institute for Advanced Study",
+              "summary": "Einstein worked at the Institute for Advanced Study in Princeton.",
+              "content": "Einstein worked at the Institute for Advanced Study in Princeton.",
+              "category": "Career",
+              "keywords": ["Albert Einstein", "Institute for Advanced Study", "Princeton"],
+              "priority": "MEDIUM",
+              "status": "COMPLETED",
+              "references": [3],
+              "entities": [
+                {
+                  "type": "person",
+                  "name": "Albert Einstein",
+                  "description": "The person who worked at the Institute for Advanced Study."
+                },
+                {
+                  "type": "organization",
+                  "name": "the Institute for Advanced Study",
+                  "description": "The research institution where Einstein worked."
+                }
+              ],
+              "is_valid": true
+            },
+            {
+              "title": "the Institute for Advanced Study – is located in – Princeton",
+              "summary": "The Institute for Advanced Study is located in Princeton.",
+              "content": "The Institute for Advanced Study is located in Princeton.",
+              "category": "Geography",
+              "keywords": ["Institute for Advanced Study", "Princeton", "located"],
+              "priority": "LOW",
+              "status": "COMPLETED",
+              "references": [3],
+              "entities": [
+                {
+                  "type": "organization",
+                  "name": "the Institute for Advanced Study",
+                  "description": "The research institution located in Princeton."
+                },
+                {
+                  "type": "location",
+                  "name": "Princeton",
+                  "description": "The city where the Institute for Advanced Study is situated."
+                }
+              ],
+              "is_valid": true
+            }
+          ],
+          "meta": {
+            "reason": "Extracted atomic events from three independent fragments: id1 yields a birth relation; id2 yields a development relation and a revolution relation (pronoun 'He' resolved to Albert Einstein); id3 yields a work relation and a location relation. Each event's summary is a brief single-sentence recap; references precisely correspond to fragment indexes.",
+            "confidence": 0.96
+          }
+        }
+      }
